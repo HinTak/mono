@@ -61,7 +61,15 @@ mono_llvm_dump_module (LLVMModuleRef module)
 {
 	/* Same as LLVMDumpModule (), but print to stdout */
 	fflush (stdout);
-	outs () << (*unwrap (module));
+	outs () << (*unwrap (module)) << "\n";
+	outs ().flush ();
+}
+
+void
+mono_llvm_dump_type (LLVMTypeRef type)
+{
+	fflush (stdout);
+	outs () << (*unwrap (type)) << "\n";
 	outs ().flush ();
 }
 
@@ -229,6 +237,13 @@ mono_llvm_build_weighted_branch (LLVMBuilderRef builder, LLVMValueRef cond, LLVM
 	return wrap (ins);
 }
 
+LLVMValueRef
+mono_llvm_build_exact_ashr (LLVMBuilderRef builder, LLVMValueRef lhs, LLVMValueRef rhs) {
+	auto b = unwrap (builder);
+	auto ins = b->CreateAShr (unwrap (lhs), unwrap (rhs), "", true);
+	return wrap (ins);
+}
+
 void
 mono_llvm_add_string_metadata (LLVMValueRef insref, const char* label, const char* text)
 {
@@ -308,22 +323,6 @@ mono_llvm_set_func_nonnull_arg (LLVMValueRef func, int argNo)
 gboolean
 mono_llvm_can_be_gep (LLVMValueRef base, LLVMValueRef* gep_base, LLVMValueRef* gep_offset)
 {
-#ifdef ENABLE_NETCORE
-	// Look for a pattern like this:
-	//   %1 = ptrtoint i8* %gep_base to i64
-	//   %2 = add i64 %1, %gep_offset
-	if (Instruction *base_inst = dyn_cast<Instruction> (unwrap (base))) {
-		if (base_inst->getOpcode () == Instruction::Add) {
-			if (Instruction *base_ptr_ins = dyn_cast<Instruction> (base_inst->getOperand (0))) {
-				if (base_ptr_ins->getOpcode () == Instruction::PtrToInt) {
-					*gep_base = wrap (base_ptr_ins->getOperand (0));
-					*gep_offset = wrap (base_inst->getOperand (1));
-					return TRUE;
-				}
-			}
-		}
-	}
-#endif
 	return FALSE;
 }
 
@@ -513,7 +512,9 @@ mono_llvm_di_create_function (void *di_builder, void *cu, LLVMValueRef func, con
 	di_file = builder->createFile (file, dir);
 	type = builder->createSubroutineType (builder->getOrCreateTypeArray (ArrayRef<Metadata*> ()));
 #if LLVM_API_VERSION >= 900
-	di_func = builder->createFunction (di_file, name, mangled_name, di_file, line, type, 0);
+	di_func = builder->createFunction (
+		di_file, name, mangled_name, di_file, line, type, 0,
+		DINode::FlagZero, DISubprogram::SPFlagDefinition | DISubprogram::SPFlagLocalToUnit);
 #else
 	di_func = builder->createFunction (di_file, name, mangled_name, di_file, line, type, true, true, 0);
 #endif

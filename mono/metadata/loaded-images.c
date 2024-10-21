@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include "mono/metadata/loaded-images-internals.h"
+#include "mono/metadata/image-internals.h"
 #include "mono/metadata/metadata-internals.h"
 #include "mono/utils/mono-logger-internals.h"
 
@@ -78,6 +79,7 @@ loaded_images_get_owner (MonoImage *image)
 gboolean
 mono_loaded_images_remove_image (MonoImage *image)
 {
+	char *name = NULL;
 	gboolean proceed = FALSE;
 	/*
 	 * Atomically decrement the refcount and remove ourselves from the hash tables, so
@@ -100,10 +102,12 @@ mono_loaded_images_remove_image (MonoImage *image)
 
 	loaded_images         = mono_loaded_images_get_hash (li, image->ref_only);
 	loaded_images_by_name = mono_loaded_images_get_by_name_hash (li, image->ref_only);
-	image2 = (MonoImage *)g_hash_table_lookup (loaded_images, image->name);
+
+	name = image->name;
+	image2 = (MonoImage *)g_hash_table_lookup (loaded_images, name);
 	if (image == image2) {
 		/* This is not true if we are called from mono_image_open () */
-		g_hash_table_remove (loaded_images, image->name);
+		g_hash_table_remove (loaded_images, name);
 	}
 	if (image->assembly_name && (g_hash_table_lookup (loaded_images_by_name, image->assembly_name) == image))
 		g_hash_table_remove (loaded_images_by_name, (char *) image->assembly_name);
@@ -119,9 +123,5 @@ done:
 MonoLoadedImages*
 mono_image_get_loaded_images_for_modules (MonoImage *image)
 {
-#ifndef ENABLE_NETCORE
 	return mono_get_global_loaded_images ();
-#else
-	g_assert_not_reached ();
-#endif
 }

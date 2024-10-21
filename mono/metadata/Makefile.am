@@ -5,23 +5,16 @@ if !ENABLE_MSVC_ONLY
 if HOST_WIN32
 win32_sources = \
 	console-win32.c \
-	console-win32-internals.h \
-	cominterop-win32-internals.h \
 	w32file-win32.c \
-	w32file-win32-internals.h \
 	icall-windows.c \
-	icall-windows-internals.h \
 	marshal-windows.c \
-	marshal-windows-internals.h \
 	mono-security-windows.c \
-	mono-security-windows-internals.h \
 	w32mutex-win32.c \
 	w32semaphore-win32.c \
 	w32event-win32.c \
 	w32process-win32.c \
 	w32socket-win32.c \
-	w32error-win32.c \
-	w32subset.h
+	w32error-win32.c
 
 platform_sources = $(win32_sources)
 
@@ -103,7 +96,7 @@ Z_LIBS=$(BUNDLE_ZLIB_PATH)
 endif
 endif
 
-noinst_LTLIBRARIES = libmonoruntime-config.la $(support_libraries) $(boehm_libraries) $(sgen_libraries)
+noinst_LTLIBRARIES = libmonoruntime-config.la $(support_libraries) $(boehm_libraries) $(sgen_libraries) $(shim_libraries)
 
 lib_LTLIBRARIES = $(icall_table_libraries) $(ilgen_libraries)
 
@@ -135,6 +128,8 @@ support_libraries = libmonoruntime-support.la
 libmonoruntime_support_la_SOURCES = support.c
 libmonoruntime_support_la_LDFLAGS = $(Z_LIBS)
 libmonoruntime_support_la_CFLAGS = $(filter-out @CXX_REMOVE_CFLAGS@, @CFLAGS@) @ZLIB_CFLAGS@
+
+culture_libraries = ../culture/libmono-culture.la
 
 #
 # This library contains the icall tables if the runtime was configured with --disable-icall-tables
@@ -220,9 +215,11 @@ common_sources = \
 	class-getters.h		\
 	class-init.h		\
 	class-init.c		\
+	class-init-internals.h	\
 	class-internals.h	\
 	class-inlines.h		\
 	class-private-definition.h	\
+	class-setup-vtable.c	\
 	class-accessors.c	\
 	cominterop.c		\
 	cominterop.h		\
@@ -230,8 +227,6 @@ common_sources = \
 	coree.c 		\
 	coree.h 		\
 	coree-internals.h \
-	culture-info.h  	\
-	culture-info-tables.h	\
 	debug-helpers.c		\
 	debug-mono-symfile.h	\
 	debug-mono-symfile.c	\
@@ -240,6 +235,8 @@ common_sources = \
 	domain-internals.h	\
 	environment.c		\
 	environment.h		\
+	environment-internals.h		\
+	icall-eventpipe.c	\
 	exception.c		\
 	exception.h		\
 	exception-internals.h	\
@@ -266,20 +263,21 @@ common_sources = \
 	loaded-images-internals.h		\
 	loaded-images.c		\
 	loaded-images-global.c	\
-	loaded-images-netcore.c	\
-	locales.c		\
 	locales.h		\
 	lock-tracer.c		\
 	lock-tracer.h		\
 	marshal.c		\
 	marshal.h		\
 	marshal-internals.h \
+	marshal-noilgen.c	\
 	mempool.c		\
 	mempool.h		\
 	mempool-internals.h	\
 	metadata.c		\
 	metadata-verify.c	\
 	metadata-internals.h	\
+	metadata-update.h	\
+	metadata-update.c	\
 	method-builder.h 	\
 	method-builder-internals.h 	\
 	method-builder.c 	\
@@ -387,7 +385,11 @@ common_sources = \
 	callspec.h	\
 	callspec.c	\
 	abi.c	\
-	native-library.c
+	memory-manager.c \
+	native-library.c \
+	native-library.h \
+	native-library-qcall.c \
+	qcall-def.h 
 
 # These source files have compile time dependencies on GC code
 gc_dependent_sources = \
@@ -424,12 +426,12 @@ if !ENABLE_MSVC_ONLY
 libmonoruntime_la_SOURCES = $(common_sources) $(icall_tables_sources) $(ilgen_sources) $(gc_dependent_sources) $(null_gc_sources) $(boehm_sources)
 # Add CXX_ADD_CFLAGS per-library until/unless https://github.com/dotnet/corefx/pull/31342.
 libmonoruntime_la_CFLAGS = $(BOEHM_DEFINES) @CXX_ADD_CFLAGS@
-libmonoruntime_la_LIBADD = libmonoruntime-config.la $(support_libraries)
+libmonoruntime_la_LIBADD = libmonoruntime-config.la $(culture_libraries) $(support_libraries) $(shim_libraries)
 
 libmonoruntimesgen_la_SOURCES = $(common_sources) $(icall_tables_sources) $(ilgen_sources) $(gc_dependent_sources) $(sgen_sources)
 # Add CXX_ADD_CFLAGS per-library until/unless https://github.com/dotnet/corefx/pull/31342.
 libmonoruntimesgen_la_CFLAGS = $(SGEN_DEFINES) @CXX_ADD_CFLAGS@
-libmonoruntimesgen_la_LIBADD = libmonoruntime-config.la $(support_libraries)
+libmonoruntimesgen_la_LIBADD = libmonoruntime-config.la $(culture_libraries) $(support_libraries) $(shim_libraries)
 
 endif # !ENABLE_MSVC_ONLY
 
@@ -466,7 +468,7 @@ libmonoruntimeinclude_HEADERS = \
 	sgen-bridge.h		\
 	threads.h		\
 	tokentype.h		\
-	verify.h		
+	verify.h
 
 if !ENABLE_MSVC_ONLY
 

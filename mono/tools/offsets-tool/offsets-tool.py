@@ -7,7 +7,7 @@ import sys
 import argparse
 import clang.cindex
 
-IOS_DEFINES = ["HOST_DARWIN", "TARGET_MACH", "MONO_CROSS_COMPILE", "USE_MONO_CTX", "_XOPEN_SOURCE"]
+MACIOS_DEFINES = ["HOST_DARWIN", "TARGET_MACH", "MONO_CROSS_COMPILE", "USE_MONO_CTX", "_XOPEN_SOURCE"]
 ANDROID_DEFINES = ["HOST_ANDROID", "MONO_CROSS_COMPILE", "USE_MONO_CTX", "BIONIC_IOCTL_NO_SIGNEDNESS_OVERLOAD"]
 LINUX_DEFINES = ["HOST_LINUX", "MONO_CROSS_COMPILE", "USE_MONO_CTX"]
 
@@ -55,15 +55,14 @@ class OffsetsTool:
 				sys.exit (1)
 
 		parser = argparse.ArgumentParser ()
-		parser.add_argument ('--libclang', dest='libclang', help='path to shared library of libclang.{so,dylib}')
+		parser.add_argument ('--libclang', dest='libclang', help='path to shared library of libclang.{so,dylib}', required=True)
 		parser.add_argument ('--emscripten-sdk', dest='emscripten_path', help='path to emscripten sdk')
 		parser.add_argument ('--outfile', dest='outfile', help='path to output file', required=True)
 		parser.add_argument ('--monodir', dest='mono_path', help='path to mono source tree', required=True)
 		parser.add_argument ('--targetdir', dest='target_path', help='path to mono tree configured for target', required=True)
 		parser.add_argument ('--abi=', dest='abi', help='ABI triple to generate', required=True)
 		parser.add_argument ('--sysroot=', dest='sysroot', help='path to sysroot headers of target')
-		parser.add_argument ('--include-prefix=', dest='include_prefix', help='prefix path to include directory of target')
-		parser.add_argument ('--netcore', dest='netcore', help='target runs with netcore', action='store_true')
+		parser.add_argument ('--prefix=', dest='prefixes', action='append', help='prefix path to include directory of target')
 		args = parser.parse_args ()
 
 		if not args.libclang or not os.path.isfile (args.libclang):
@@ -89,16 +88,18 @@ class OffsetsTool:
 
 		# Linux
 		elif "arm-linux-gnueabihf" == args.abi:
+			require_sysroot (args)
 			self.target = Target ("TARGET_ARM", None, ["ARM_FPU_VFP", "HAVE_ARMV5", "HAVE_ARMV6", "HAVE_ARMV7"] + LINUX_DEFINES)
 			self.target_args += ["--target=arm---gnueabihf"]
 			self.target_args += ["-I", args.sysroot + "/include"]
 
-			if args.include_prefix:
-				if not os.path.isdir (args.include_prefix):
-					print ("provided path via --include-prefix (\"" + args.include_prefix + "\") doesn't exist.", file=sys.stderr)
-					sys.exit (1)
-				self.target_args += ["-I", args.include_prefix + "/include"]
-				self.target_args += ["-I", args.include_prefix + "/include-fixed"]
+			if args.prefixes:
+				for prefix in args.prefixes:
+					if not os.path.isdir (prefix):
+						print ("provided path via --prefix (\"" + prefix + "\") doesn't exist.", file=sys.stderr)
+						sys.exit (1)
+					self.target_args += ["-I", prefix + "/include"]
+					self.target_args += ["-I", prefix + "/include-fixed"]
 			else:
 				found = False
 				for i in range (11, 5, -1):
@@ -111,30 +112,61 @@ class OffsetsTool:
 					break
 
 				if not found:
-					print ("could not find a valid include path for target, provide one via --include-prefix=<path>.", file=sys.stderr)
+					print ("could not find a valid include path for target, provide one via --prefix=<path>.", file=sys.stderr)
 					sys.exit (1)
+
+		elif "aarch64-linux-gnu" == args.abi:
+			require_sysroot (args)
+			self.target = Target ("TARGET_ARM64", None, LINUX_DEFINES)
+			self.target_args += ["--target=aarch64-linux-gnu"]
+			self.target_args += ["--sysroot", args.sysroot]
+			self.target_args += ["-I", args.sysroot + "/include"]
+			if args.prefixes:
+				for prefix in args.prefixes:
+					if not os.path.isdir (prefix):
+						print ("provided path via --prefix (\"" + prefix + "\") doesn't exist.", file=sys.stderr)
+						sys.exit (1)
+					self.target_args += ["-I", prefix + "/include"]
+					self.target_args += ["-I", prefix + "/include-fixed"]
 
 		# iOS
 		elif "arm-apple-darwin10" == args.abi:
 			require_sysroot (args)
-			self.target = Target ("TARGET_ARM", "TARGET_IOS", ["ARM_FPU_VFP", "HAVE_ARMV5"] + IOS_DEFINES)
+			self.target = Target ("TARGET_ARM", "TARGET_IOS", ["ARM_FPU_VFP", "HAVE_ARMV5"] + MACIOS_DEFINES)
 			self.target_args += ["-arch", "arm"]
 			self.target_args += ["-isysroot", args.sysroot]
 		elif "aarch64-apple-darwin10" == args.abi:
 			require_sysroot (args)
-			self.target = Target ("TARGET_ARM64", "TARGET_IOS", IOS_DEFINES)
+			self.target = Target ("TARGET_ARM64", "TARGET_IOS", MACIOS_DEFINES)
+			self.target_args += ["-arch", "arm64"]
+			self.target_args += ["-isysroot", args.sysroot]
+		elif "i386-apple-darwin10" == args.abi:
+			require_sysroot (args)
+			self.target = Target ("TARGET_X86", "", MACIOS_DEFINES)
+			self.target_args += ["-arch", "i386"]
+			self.target_args += ["-isysroot", args.sysroot]
+		elif "x86_64-apple-darwin10" == args.abi:
+			require_sysroot (args)
+			self.target = Target ("TARGET_AMD64", "", MACIOS_DEFINES)
+			self.target_args += ["-arch", "x86_64"]
+			self.target_args += ["-isysroot", args.sysroot]
+
+		# macOS
+		if "aarch64-apple-darwin20" == args.abi:
+			require_sysroot (args)
+			self.target = Target ("TARGET_ARM64", "TARGET_OSX", MACIOS_DEFINES)
 			self.target_args += ["-arch", "arm64"]
 			self.target_args += ["-isysroot", args.sysroot]
 
 		# watchOS
 		elif "armv7k-apple-darwin" == args.abi:
 			require_sysroot (args)
-			self.target = Target ("TARGET_ARM", "TARGET_WATCHOS", ["ARM_FPU_VFP", "HAVE_ARMV5"] + IOS_DEFINES)
+			self.target = Target ("TARGET_ARM", "TARGET_WATCHOS", ["ARM_FPU_VFP", "HAVE_ARMV5"] + MACIOS_DEFINES)
 			self.target_args += ["-arch", "armv7k"]
 			self.target_args += ["-isysroot", args.sysroot]
 		elif "aarch64-apple-darwin10_ilp32" == args.abi:
 			require_sysroot (args)
-			self.target = Target ("TARGET_ARM64", "TARGET_WATCHOS", ["MONO_ARCH_ILP32"] + IOS_DEFINES)
+			self.target = Target ("TARGET_ARM64", "TARGET_WATCHOS", ["MONO_ARCH_ILP32"] + MACIOS_DEFINES)
 			self.target_args += ["-arch", "arm64_32"]
 			self.target_args += ["-isysroot", args.sysroot]
 
@@ -168,9 +200,6 @@ class OffsetsTool:
 			print ("ABI '" + args.abi + "' is not supported.", file=sys.stderr)
 			sys.exit (1)
 
-		if args.netcore:
-			self.target_args += ["-DENABLE_NETCORE"]
-
 		self.args = args
 
 	#
@@ -186,6 +215,7 @@ class OffsetsTool:
 			args.mono_path + "/mono",
 			args.mono_path + "/mono/eglib",
 			args.target_path,
+			args.target_path + "/mono",
 			args.target_path + "/mono/eglib"
 			]
 		

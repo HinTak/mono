@@ -10,8 +10,8 @@
  */
 
 #include <config.h>
+#include <mono/utils/mono-compiler.h>
 
-#if !ENABLE_NETCORE
 
 #ifdef HAVE_SYS_TYPES_H
 #include <sys/types.h>
@@ -186,4 +186,3 @@ ves_icall_System_IO_KqueueMonitor_kevent_notimeout (int *kq_ptr, gpointer change
 
 #endif /* #if HAVE_KQUEUE */
 
-#endif /* !ENABLE_NETCORE */

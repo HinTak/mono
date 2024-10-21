@@ -3852,7 +3852,7 @@ namespace System.Windows.Forms
 		{
 			Size item_size = ItemSize;
 			for (int i = 0; i < items.Count; i++) {
-				Rectangle item_rect = items [i].Bounds;
+				Rectangle item_rect = new Rectangle(GetItemLocation(i), item_size);
 				if (item_rect.Contains (x, y))
 					return items [i];
 			}
@@ -5156,8 +5156,6 @@ namespace System.Windows.Forms
 
 			public virtual void Clear ()
 			{
-				if (owner != null && owner.VirtualMode)
-					throw new InvalidOperationException ();
 				if (is_main_collection && owner != null) {
 					owner.SetFocusedItem (-1);
 					owner.h_scroll.Value = owner.v_scroll.Value = 0;

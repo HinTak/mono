@@ -61,6 +61,7 @@
 #include <mono/metadata/mono-endian.h>
 #include <mono/metadata/environment.h>
 #include <mono/metadata/mono-mlist.h>
+#include <mono/metadata/handle.h>
 #include <mono/utils/mono-merp.h>
 #include <mono/utils/mono-mmap.h>
 #include <mono/utils/mono-logger-internals.h>
@@ -68,6 +69,7 @@
 #include <mono/utils/mono-error-internals.h>
 #include <mono/utils/mono-state.h>
 #include <mono/utils/mono-threads-debug.h>
+#include <mono/utils/w32subset.h>
 
 #include "mini.h"
 #include "trace.h"
@@ -357,6 +359,8 @@ is_address_protected (MonoJitInfo *ji, MonoJitExceptionInfo *ei, gpointer ip)
 	guint32 offset;
 	guint16 clause;
 
+	ip = MINI_FTNPTR_TO_ADDR (ip);
+
 	if (ei->try_start > ip || ip >= ei->try_end)
 		return FALSE;
 
@@ -576,6 +580,7 @@ mono_find_jit_info (MonoDomain *domain, MonoJitTlsData *jit_tls, MonoJitInfo *re
 		else
 			real_ip = (const char*)ip;
 
+		real_ip = (const char*)MINI_FTNPTR_TO_ADDR (real_ip);
 		if ((real_ip >= start) && (real_ip <= start + ji->code_size))
 			offset = real_ip - start;
 		else
@@ -728,7 +733,7 @@ unwinder_init (Unwinder *unwinder)
 	memset (unwinder, 0, sizeof (Unwinder));
 }
 
-#if defined(__GNUC__) && defined(TARGET_ARM64)
+#if defined(__GNUC__) && defined(TARGET_ARM64) && !defined(__clang__)
 /* gcc 4.9.2 seems to miscompile this on arm64 */
 static __attribute__((optimize("O0"))) gboolean
 #else
@@ -783,8 +788,8 @@ unwinder_unwind_frame (Unwinder *unwinder,
 /*
  * This function is async-safe.
  */
-static gpointer
-get_generic_info_from_stack_frame (MonoJitInfo *ji, MonoContext *ctx)
+gpointer
+mono_get_generic_info_from_stack_frame (MonoJitInfo *ji, MonoContext *ctx)
 {
 	MonoGenericJitInfo *gi;
 	MonoMethod *method;
@@ -827,7 +832,7 @@ get_generic_info_from_stack_frame (MonoJitInfo *ji, MonoContext *ctx)
 	}
 
 	method = jinfo_get_method (ji);
-	if (mono_method_get_context (method)->method_inst) {
+	if (mono_method_get_context (method)->method_inst || mini_method_is_default_method (method)) {
 		/* A MonoMethodRuntimeGenericContext* */
 		return info;
 	} else if ((method->flags & METHOD_ATTRIBUTE_STATIC) || m_class_is_valuetype (method->klass)) {
@@ -837,7 +842,7 @@ get_generic_info_from_stack_frame (MonoJitInfo *ji, MonoContext *ctx)
 		/* Avoid returning a managed object */
 		MonoObject *this_obj = (MonoObject *)info;
 
-		return this_obj->vtable;
+		return this_obj ? this_obj->vtable : NULL;
 	}
 }
 
@@ -855,12 +860,13 @@ mono_get_generic_context_from_stack_frame (MonoJitInfo *ji, gpointer generic_inf
 
 	method = jinfo_get_method (ji);
 	g_assert (method->is_inflated);
-	if (mono_method_get_context (method)->method_inst) {
+	if (mono_method_get_context (method)->method_inst || mini_method_is_default_method (method)) {
 		MonoMethodRuntimeGenericContext *mrgctx = (MonoMethodRuntimeGenericContext *)generic_info;
 
 		klass = mrgctx->class_vtable->klass;
 		context.method_inst = mrgctx->method_inst;
-		g_assert (context.method_inst);
+		if (!mini_method_is_default_method (method))
+			g_assert (context.method_inst);		
 	} else {
 		MonoVTable *vtable = (MonoVTable *)generic_info;
 
@@ -872,6 +878,12 @@ mono_get_generic_context_from_stack_frame (MonoJitInfo *ji, gpointer generic_inf
 		method_container_class = mono_class_get_generic_class (method->klass)->container_class;
 	else
 		method_container_class = method->klass;
+
+	if (mini_method_is_default_method (method)) {
+		if (mono_class_is_ginst (klass) || mono_class_is_gtd (klass))
+			context.class_inst = mini_class_get_context (klass)->class_inst;
+		return context;
+	}
 
 	/* class might refer to a subclass of method's class */
 	while (!(klass == method->klass || (mono_class_is_ginst (klass) && mono_class_get_generic_class (klass)->container_class == method_container_class))) {
@@ -898,7 +910,7 @@ get_method_from_stack_frame (MonoJitInfo *ji, gpointer generic_info)
 	MonoGenericContext context;
 	MonoMethod *method;
 	
-	if (!ji->has_generic_jit_info || !mono_jit_info_get_generic_jit_info (ji)->has_this)
+	if (!ji->has_generic_jit_info || !mono_jit_info_get_generic_jit_info (ji)->has_this || !generic_info)
 		return jinfo_get_method (ji);
 	context = mono_get_generic_context_from_stack_frame (ji, generic_info);
 
@@ -1047,19 +1059,28 @@ ves_icall_get_trace (MonoException *exc, gint32 skip, MonoBoolean need_file_info
 		return res;
 	}
 
+	HANDLE_FUNCTION_ENTER ();
+
+	MONO_HANDLE_PIN (ta);
+
 	len = mono_array_length_internal (ta) / TRACE_IP_ENTRY_SIZE;
 
 	res = mono_array_new_checked (domain, mono_defaults.stack_frame_class, len > skip ? len - skip : 0, error);
-	if (mono_error_set_pending_exception (error))
-		return NULL;
+	if (!is_ok (error))
+		goto fail;
+
+	MONO_HANDLE_PIN (res);
+
+	MonoObjectHandle sf_h;
+	sf_h = MONO_HANDLE_NEW (MonoObject, NULL);
 
 	for (i = skip; i < len; i++) {
 		MonoJitInfo *ji;
 		MonoStackFrame *sf = (MonoStackFrame *)mono_object_new_checked (domain, mono_defaults.stack_frame_class, error);
-		if (!is_ok (error)) {
-			mono_error_set_pending_exception (error);
-			return NULL;
-		}
+		if (!is_ok (error))
+			goto fail;
+		MONO_HANDLE_ASSIGN_RAW (sf_h, sf);
+
 		ExceptionTraceIp trace_ip;
 		memcpy (&trace_ip, mono_array_addr_fast (ta, ExceptionTraceIp, i), sizeof (ExceptionTraceIp));
 		gpointer ip = trace_ip.ip;
@@ -1091,18 +1112,14 @@ ves_icall_get_trace (MonoException *exc, gint32 skip, MonoBoolean need_file_info
 			s = mono_method_get_name_full (method, TRUE, FALSE, MONO_TYPE_NAME_FORMAT_REFLECTION);
 			MonoString *name = mono_string_new_checked (domain, s, error);
 			g_free (s);
-			if (!is_ok (error)) {
-				mono_error_set_pending_exception (error);
-				return NULL;
-			}
+			if (!is_ok (error))
+				goto fail;
 			MONO_OBJECT_SETREF_INTERNAL (sf, internal_method_name, name);
 		}
 		else {
 			MonoReflectionMethod *rm = mono_method_get_object_checked (domain, method, NULL, error);
-			if (!is_ok (error)) {
-				mono_error_set_pending_exception (error);
-				return NULL;
-			}
+			if (!is_ok (error))
+				goto fail;
 			MONO_OBJECT_SETREF_INTERNAL (sf, method, rm);
 		}
 
@@ -1129,10 +1146,8 @@ ves_icall_get_trace (MonoException *exc, gint32 skip, MonoBoolean need_file_info
 		if (need_file_info) {
 			if (location && location->source_file) {
 				MonoString *filename = mono_string_new_checked (domain, location->source_file, error);
-				if (!is_ok (error)) {
-					mono_error_set_pending_exception (error);
-					return NULL;
-				}
+				if (!is_ok (error))
+					goto fail;
 				MONO_OBJECT_SETREF_INTERNAL (sf, filename, filename);
 				sf->line = location->row;
 				sf->column = location->column;
@@ -1145,8 +1160,13 @@ ves_icall_get_trace (MonoException *exc, gint32 skip, MonoBoolean need_file_info
 		mono_debug_free_source_location (location);
 		mono_array_setref_internal (res, i - skip, sf);
 	}
+	goto exit;
 
-	return res;
+ fail:
+	mono_error_set_pending_exception (error);
+	res = NULL;
+ exit:
+	HANDLE_FUNCTION_RETURN_VAL (res);
 }
 
 static void
@@ -1355,10 +1375,12 @@ mono_walk_stack_full (MonoJitStackWalk func, MonoContext *start_ctx, MonoDomain 
 
 		frame.il_offset = il_offset;
 
-		if ((unwind_options & MONO_UNWIND_LOOKUP_ACTUAL_METHOD) && frame.ji) {
-			frame.actual_method = get_method_from_stack_frame (frame.ji, get_generic_info_from_stack_frame (frame.ji, &ctx));
-		} else {
-			frame.actual_method = frame.method;
+		/* actual_method might already be set by mono_arch_unwind_frame () */
+		if (!frame.actual_method) {
+			if ((unwind_options & MONO_UNWIND_LOOKUP_ACTUAL_METHOD) && frame.ji)
+				frame.actual_method = get_method_from_stack_frame (frame.ji, mono_get_generic_info_from_stack_frame (frame.ji, &ctx));
+			else
+				frame.actual_method = frame.method;
 		}
 
 		if (get_reg_locations)
@@ -1446,9 +1468,9 @@ fill_frame_managed_info (MonoFrameSummary *frame, MonoMethod * method)
 typedef struct {
 	char *suffix;
 	char *exported_name;
-} MonoLibWhitelistEntry;
+} MonoLibAllowlistEntry;
 
-static GList *native_library_whitelist;
+static GList *native_library_allowlist;
 static gboolean allow_all_native_libraries = FALSE;
 
 static void
@@ -1457,10 +1479,10 @@ mono_crash_reporting_register_native_library (const char *module_path, const cha
 	// Examples: libsystem_pthread.dylib -> "pthread"
 	// Examples: libsystem_platform.dylib -> "platform"
 	// Examples: mono-sgen -> "mono" from above line
-	MonoLibWhitelistEntry *entry = g_new0 (MonoLibWhitelistEntry, 1);
+	MonoLibAllowlistEntry*entry = g_new0 (MonoLibAllowlistEntry, 1);
 	entry->suffix = g_strdup (module_path);
 	entry->exported_name = g_strdup (module_name);
-	native_library_whitelist = g_list_append (native_library_whitelist, entry);
+	native_library_allowlist = g_list_append (native_library_allowlist, entry);
 }
 
 static void
@@ -1470,7 +1492,7 @@ mono_crash_reporting_allow_all_native_libraries ()
 }
 
 static gboolean
-check_whitelisted_module (const char *in_name, const char **out_module)
+check_allowlisted_module (const char *in_name, const char **out_module)
 {
 #ifndef MONO_PRIVATE_CRASHES
 		return TRUE;
@@ -1498,8 +1520,8 @@ check_whitelisted_module (const char *in_name, const char **out_module)
 		return TRUE;
 	}
 
-	for (GList *cursor = native_library_whitelist; cursor; cursor = cursor->next) {
-		MonoLibWhitelistEntry *iter = (MonoLibWhitelistEntry *) cursor->data;
+	for (GList *cursor = native_library_allowlist; cursor; cursor = cursor->next) {
+		MonoLibAllowlistEntry*iter = (MonoLibAllowlistEntry*) cursor->data;
 		if (!g_str_has_suffix (in_name, iter->suffix))
 			continue;
 		if (out_module)
@@ -1538,7 +1560,7 @@ mono_get_portable_ip (intptr_t in_ip, intptr_t *out_ip, gint32 *out_offset, cons
 	if (!success)
 		return FALSE;
 
-	if (!check_whitelisted_module (fname, out_module))
+	if (!check_allowlisted_module (fname, out_module))
 		return FALSE;
 
 	*out_ip = mono_make_portable_ip ((intptr_t) saddr, (intptr_t) fbase);
@@ -1748,6 +1770,10 @@ mono_summarize_unmanaged_stack (MonoThreadSummary *out)
 	// Summarize unmanaged stack
 	// 
 #ifdef HAVE_BACKTRACE_SYMBOLS
+	MonoDomain *domain = mono_domain_get ();
+
+	gboolean has_jit_tls = mono_tls_get_jit_tls () != NULL;
+
 	intptr_t frame_ips [MONO_MAX_SUMMARY_FRAMES];
 
 	out->num_unmanaged_frames = backtrace ((void **)frame_ips, MONO_MAX_SUMMARY_FRAMES);
@@ -1758,11 +1784,16 @@ mono_summarize_unmanaged_stack (MonoThreadSummary *out)
 		const char* module_buf = frame->unmanaged_data.module;
 		int success = mono_get_portable_ip (ip, &frame->unmanaged_data.ip, &frame->unmanaged_data.offset, &module_buf, (char *) frame->str_descr);
 
+		/* If the thread is not attached to the JIT, (ie crashed native
+		 * thread), don't try to look for managed method info - it will
+		 * assert in mono_jit_info_table_find_internal */
+		if (!has_jit_tls)
+			continue;
+
 		/* attempt to look up any managed method at that ip */
 		/* TODO: Trampolines - follow examples from mono_print_method_from_ip() */
 
 		MonoJitInfo *ji;
-		MonoDomain *domain = mono_domain_get ();
 		MonoDomain *target_domain;
 		ji = mini_jit_info_table_find_ext (domain, (char *)ip, TRUE, &target_domain);
 		if (ji) {
@@ -1793,7 +1824,7 @@ mono_summarize_unmanaged_stack (MonoThreadSummary *out)
 
 	MonoThreadInfo *thread = mono_thread_info_current_unchecked ();
 	out->info_addr = (intptr_t) thread;
-	out->jit_tls = thread->jit_data;
+	out->jit_tls = thread ? thread->jit_data : NULL;
 	out->domain = mono_domain_get ();
 
 	if (!out->ctx) {
@@ -1898,7 +1929,7 @@ ves_icall_get_frame_info (gint32 skip, MonoBoolean need_file_info,
 			jmethod = frame.method;
 			actual_method = frame.actual_method;
 		} else {
-			actual_method = get_method_from_stack_frame (ji, get_generic_info_from_stack_frame (ji, &ctx));
+			actual_method = get_method_from_stack_frame (ji, mono_get_generic_info_from_stack_frame (ji, &ctx));
 		}
 	}
 
@@ -1954,7 +1985,7 @@ get_exception_catch_class (MonoJitExceptionInfo *ei, MonoJitInfo *ji, MonoContex
 
 	if (!ji->has_generic_jit_info || !mono_jit_info_get_generic_jit_info (ji)->has_this)
 		return catch_class;
-	context = mono_get_generic_context_from_stack_frame (ji, get_generic_info_from_stack_frame (ji, ctx));
+	context = mono_get_generic_context_from_stack_frame (ji, mono_get_generic_info_from_stack_frame (ji, ctx));
 
 	/* FIXME: we shouldn't inflate but instead put the
 	   type in the rgctx and fetch it from there.  It
@@ -1987,6 +2018,11 @@ mini_jit_info_table_find_ext (MonoDomain *domain, gpointer addr, gboolean allow_
 
 	if (out_domain)
 		*out_domain = NULL;
+
+	// FIXME: Transition all callers to this function
+	// or add it to mono_jit_info_table_find
+	ji = mono_jit_info_table_find_internal (domain, addr, TRUE, allow_trampolines);
+	addr = MINI_FTNPTR_TO_ADDR (addr);
 
 	ji = mono_jit_info_table_find_internal (domain, addr, TRUE, allow_trampolines);
 	if (ji) {
@@ -2349,7 +2385,7 @@ handle_exception_first_pass (MonoContext *ctx, MonoObject *obj, gint32 *out_filt
 			// avoid giant stack traces during a stack overflow
 			if (frame_count < 1000) {
 				trace_ips = g_list_prepend (trace_ips, ip);
-				trace_ips = g_list_prepend (trace_ips, get_generic_info_from_stack_frame (ji, ctx));
+				trace_ips = g_list_prepend (trace_ips, mono_get_generic_info_from_stack_frame (ji, ctx));
 				trace_ips = g_list_prepend (trace_ips, ji);
 			}
 		}
@@ -2693,6 +2729,7 @@ mono_handle_exception_internal (MonoContext *ctx, MonoObject *obj, gboolean resu
 		MONO_PROFILER_RAISE (exception_throw, (obj));
 		jit_tls->orig_ex_ctx_set = FALSE;
 
+
 		StackFrameInfo catch_frame;
 		MonoFirstPassResult res;
 		res = handle_exception_first_pass (&ctx_cp, obj, &first_filter_idx, &ji, &prev_ji, non_exception, &catch_frame, &last_mono_wrapper_runtime_invoke);
@@ -2721,12 +2758,10 @@ mono_handle_exception_internal (MonoContext *ctx, MonoObject *obj, gboolean resu
 			 * FIXME: The check below is hackish, but its hard to distinguish
 			 * these runtime invoke calls from others in the runtime.
 			 */
-#ifndef ENABLE_NETCORE
 			if (ji && jinfo_get_method (ji)->wrapper_type == MONO_WRAPPER_RUNTIME_INVOKE) {
 				if (prev_ji && jinfo_get_method (prev_ji) == mono_defaults.threadpool_perform_wait_callback_method)
 					unhandled = TRUE;
 			}
-#endif
 
 			if (unhandled)
 				mini_get_dbg_callbacks ()->handle_exception ((MonoException *)obj, ctx, NULL, NULL);
@@ -3203,7 +3238,7 @@ mono_free_altstack (MonoJitTlsData *tls)
 		mono_mprotect (tls->stack_ovf_guard_base, tls->stack_ovf_guard_size, MONO_MMAP_READ|MONO_MMAP_WRITE);
 }
 
-#elif G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT) && defined(HOST_WIN32)
+#elif HAVE_API_SUPPORT_WIN32_SET_THREAD_STACK_GUARANTEE && defined(HOST_WIN32)
 void
 mono_setup_altstack (MonoJitTlsData *tls)
 {
@@ -3378,7 +3413,6 @@ print_stack_frame_to_string (StackFrameInfo *frame, MonoContext *ctx, gpointer d
 }
 
 #ifndef MONO_CROSS_COMPILE
-static gboolean handle_crash_loop = FALSE;
 
 /*
  * mono_handle_native_crash:
@@ -3390,9 +3424,6 @@ void
 mono_handle_native_crash (const char *signal, MonoContext *mctx, MONO_SIG_HANDLER_INFO_TYPE *info)
 {
 	MonoJitTlsData *jit_tls = mono_tls_get_jit_tls ();
-
-	if (handle_crash_loop)
-		return;
 
 #ifdef MONO_ARCH_USE_SIGACTION
 	struct sigaction sa;
@@ -3423,11 +3454,8 @@ mono_handle_native_crash (const char *signal, MonoContext *mctx, MONO_SIG_HANDLE
 		}
 	}
 
-	/* prevent infinite loops in crash handling */
-	handle_crash_loop = TRUE;
-
 	/*
-	 * A SIGSEGV indicates something went very wrong so we can no longer depend
+	 * A crash indicates something went very wrong so we can no longer depend
 	 * on anything working. So try to print out lots of diagnostics, starting 
 	 * with ones which have a greater chance of working.
 	 */
@@ -3561,7 +3589,7 @@ find_last_handler_block (StackFrameInfo *frame, MonoContext *ctx, gpointer data)
 	if (!ji)
 		return FALSE;
 
-	ip = MONO_CONTEXT_GET_IP (ctx);
+	ip = MINI_FTNPTR_TO_ADDR (MONO_CONTEXT_GET_IP (ctx));
 
 	for (i = 0; i < ji->num_clauses; ++i) {
 		MonoJitExceptionInfo *ei = ji->clauses + i;
@@ -3569,7 +3597,7 @@ find_last_handler_block (StackFrameInfo *frame, MonoContext *ctx, gpointer data)
 			continue;
 		/*If ip points to the first instruction it means the handler block didn't start
 		 so we can leave its execution to the EH machinery*/
-		if (ei->handler_start <= ip && ip < ei->data.handler_end) {
+		if (MINI_FTNPTR_TO_ADDR (ei->handler_start) <= ip && ip < MINI_FTNPTR_TO_ADDR (ei->data.handler_end)) {
 			pdata->ji = ji;
 			pdata->ei = ei;
 			pdata->ctx = *ctx;
@@ -3588,13 +3616,13 @@ install_handler_block_guard (MonoJitInfo *ji, MonoContext *ctx)
 	gpointer ip;
 	guint8 *bp;
 
-	ip = MONO_CONTEXT_GET_IP (ctx);
+	ip = MINI_FTNPTR_TO_ADDR (MONO_CONTEXT_GET_IP (ctx));
 
 	for (i = 0; i < ji->num_clauses; ++i) {
 		clause = &ji->clauses [i];
 		if (clause->flags != MONO_EXCEPTION_CLAUSE_FINALLY)
 			continue;
-		if (clause->handler_start <= ip && clause->data.handler_end > ip)
+		if (MINI_FTNPTR_TO_ADDR (clause->handler_start) <= ip && MINI_FTNPTR_TO_ADDR (clause->data.handler_end) > ip)
 			break;
 	}
 

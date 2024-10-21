@@ -113,7 +113,6 @@ typedef struct _MonoFSAsyncResult {
 */
 /* System.IO.MonoIO */
 
-#if !ENABLE_NETCORE
 
 ICALL_EXPORT
 MonoBoolean
@@ -248,7 +247,6 @@ ICALL_EXPORT
 void
 ves_icall_System_IO_MonoIO_DumpHandles (void);
 
-#endif /* !ENABLE_NETCORE */
 
 #if defined (TARGET_IOS) || defined (TARGET_ANDROID)
 
@@ -467,8 +465,11 @@ mono_w32file_set_cwd (const gunichar2 *path);
 gboolean
 mono_w32file_create_pipe (gpointer *readpipe, gpointer *writepipe, guint32 size);
 
+guint32
+mono_w32file_get_drive_type (const gunichar2 *root_path_name, gint32 root_path_name_length, MonoError *error);
+
 gint32
-mono_w32file_get_logical_drive (guint32 len, gunichar2 *buf);
+mono_w32file_get_logical_drive (guint32 len, gunichar2 *buf, MonoError *error);
 
 #ifndef PLATFORM_NO_DRIVEINFO
 gboolean

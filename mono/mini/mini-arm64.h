@@ -21,9 +21,6 @@
 #define MONO_MAX_FREGS 32
 #define MONO_MAX_XREGS 32
 
-#if !defined(DISABLE_SIMD) && defined(ENABLE_NETCORE)
-#define MONO_ARCH_SIMD_INTRINSICS 1
-#endif
 
 #define MONO_CONTEXT_SET_LLVM_EXC_REG(ctx, exc) do { (ctx)->regs [0] = (gsize)exc; } while (0)
 
@@ -177,6 +174,9 @@ typedef struct {
 #define MONO_ARCH_FLOAT32_SUPPORTED 1
 #define MONO_ARCH_HAVE_INTERP_PINVOKE_TRAMP 1
 #define MONO_ARCH_LLVM_TARGET_LAYOUT "e-i64:64-i128:128-n32:64-S128"
+#ifdef TARGET_OSX
+#define MONO_ARCH_FORCE_FLOAT32 1
+#endif
 
 // Does the ABI have a volatile non-parameter register, so tailcall
 // can pass context to generics or interfaces?
@@ -250,7 +250,7 @@ typedef struct {
 struct CallInfo {
 	int nargs;
 	int gr, fr, stack_usage;
-	gboolean pinvoke;
+	gboolean pinvoke, vararg;
 	ArgInfo ret;
 	ArgInfo sig_cookie;
 	ArgInfo args [1];
@@ -280,6 +280,10 @@ guint8* mono_arm_emit_load_regarray (guint8 *code, guint64 regs, int basereg, in
 
 /* MonoJumpInfo **ji */
 guint8* mono_arm_emit_aotconst (gpointer ji, guint8 *code, guint8 *code_start, int dreg, guint32 patch_type, gconstpointer data);
+
+guint8* mono_arm_emit_brx (guint8 *code, int reg);
+
+guint8* mono_arm_emit_blrx (guint8 *code, int reg);
 
 void mono_arm_patch (guint8 *code, guint8 *target, int relocation);
 

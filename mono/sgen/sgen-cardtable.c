@@ -441,17 +441,24 @@ sgen_card_table_clear_cards (void)
 }
 
 static void
-sgen_card_table_start_scan_remsets (void)
+sgen_card_table_start_scan_remsets (gboolean is_parallel)
 {
 #ifdef SGEN_HAVE_OVERLAPPING_CARDS
 	/*FIXME we should have a bit on each block/los object telling if the object have marked cards.*/
 	/*First we copy*/
-	sgen_major_collector_iterate_block_ranges (move_cards_to_shadow_table);
-	sgen_los_iterate_live_block_ranges (move_cards_to_shadow_table);
-	sgen_wbroots_iterate_live_block_ranges (move_cards_to_shadow_table);
+	if (is_parallel) {
+		sgen_iterate_all_block_ranges (move_cards_to_shadow_table, is_parallel);
+	} else {
+		sgen_major_collector_iterate_block_ranges (move_cards_to_shadow_table);
+		sgen_los_iterate_live_block_ranges (move_cards_to_shadow_table);
+		sgen_wbroots_iterate_live_block_ranges (move_cards_to_shadow_table);
+	}
 
 	/*Then we clear*/
-	sgen_card_table_clear_cards ();
+	if (is_parallel)
+		sgen_iterate_all_block_ranges (clear_cards, is_parallel);
+	else
+		sgen_card_table_clear_cards ();
 #endif
 }
 
@@ -587,9 +594,9 @@ sgen_cardtable_scan_object (GCObject *obj, mword block_obj_size, guint8 *cards, 
 	HEAVY_STAT (++bloby_objects);
 	if (cards) {
 		if (sgen_card_table_is_range_marked (cards, (mword)obj, block_obj_size))
-			ctx.ops->scan_object (obj, sgen_obj_get_descriptor (obj), ctx.queue);
+			ctx.ops->scan_object (obj, sgen_obj_get_descriptor_safe (obj), ctx.queue);
 	} else if (sgen_card_table_region_begin_scanning ((mword)obj, block_obj_size)) {
-		ctx.ops->scan_object (obj, sgen_obj_get_descriptor (obj), ctx.queue);
+		ctx.ops->scan_object (obj, sgen_obj_get_descriptor_safe (obj), ctx.queue);
 	}
 
 	sgen_binary_protocol_card_scan (obj, sgen_safe_object_get_size (obj));

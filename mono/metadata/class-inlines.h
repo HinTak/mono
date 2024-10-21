@@ -183,6 +183,12 @@ m_class_is_auto_layout (MonoClass *klass)
 }
 
 static inline gboolean
+m_class_is_sealed (MonoClass *klass)
+{
+	return mono_class_get_flags (klass) & TYPE_ATTRIBUTE_SEALED;
+}
+
+static inline gboolean
 m_class_is_ginst (MonoClass *klass)
 {
 	return mono_class_is_ginst (klass);
@@ -192,6 +198,29 @@ static inline gboolean
 m_class_is_private (MonoClass *klass)
 {
 	return (mono_class_get_flags (klass) & TYPE_ATTRIBUTE_VISIBILITY_MASK) == TYPE_ATTRIBUTE_NOT_PUBLIC;
+}
+
+static inline gboolean
+m_method_is_static (MonoMethod *method)
+{
+	return (method->flags & METHOD_ATTRIBUTE_STATIC) != 0;
+}
+static inline gboolean
+m_method_is_virtual (MonoMethod *method)
+{
+	return (method->flags & METHOD_ATTRIBUTE_VIRTUAL) != 0;
+}
+
+static inline gboolean
+m_method_is_abstract (MonoMethod *method)
+{
+        return (method->flags & METHOD_ATTRIBUTE_ABSTRACT) != 0;
+}
+
+static inline gboolean
+m_method_is_final (MonoMethod *method)
+{
+        return (method->flags & METHOD_ATTRIBUTE_FINAL) != 0;
 }
 
 static inline gboolean

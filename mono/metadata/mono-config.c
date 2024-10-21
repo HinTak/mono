@@ -77,10 +77,10 @@
 #elif defined(__s390__)
 #define CONFIG_CPU "s390"
 #define CONFIG_WORDSIZE "32"
-#elif defined(__arm__)
+#elif defined(__arm__) || defined(TARGET_ARM)
 #define CONFIG_CPU "arm"
 #define CONFIG_WORDSIZE "32"
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(TARGET_ARM64)
 #define CONFIG_CPU "armv8"
 #define CONFIG_WORDSIZE "64"
 #elif defined(mips) || defined(__mips) || defined(_mips)
@@ -95,6 +95,9 @@
 #elif defined(TARGET_WASM)
 #define CONFIG_CPU "wasm"
 #define CONFIG_WORDSIZE "32"
+#elif defined(__loongarch64) || defined(TARGET_LOONGARCH64)
+#define CONFIG_CPU "loongarch64"
+#define CONFIG_WORDSIZE "64"
 #else
 #error Unknown CPU
 #define CONFIG_CPU "unknownCPU"
@@ -666,8 +669,7 @@ mono_config_for_assembly_internal (MonoImage *assembly)
 	MONO_REQ_GC_UNSAFE_MODE;
 
 	MonoConfigParseState state = {NULL};
-	int i;
-	char *aname, *cfg, *cfg_name;
+	char *cfg_name;
 	const char *bundled_config;
 	
 	state.assembly = assembly;
@@ -684,6 +686,7 @@ mono_config_for_assembly_internal (MonoImage *assembly)
 
 #ifndef DISABLE_CFGDIR_CONFIG
 	int got_it = 0;
+	char *aname, *cfg;
 	cfg_name = g_strdup_printf ("%s.config", mono_image_get_name (assembly));
 	const char *cfg_dir = mono_get_config_dir ();
 	if (!cfg_dir) {
@@ -691,7 +694,7 @@ mono_config_for_assembly_internal (MonoImage *assembly)
 		return;
 	}
 
-	for (i = 0; (aname = get_assembly_filename (assembly, i)) != NULL; ++i) {
+	for (int i = 0; (aname = get_assembly_filename (assembly, i)) != NULL; ++i) {
 		cfg = g_build_filename (cfg_dir, "mono", "assemblies", aname, cfg_name, (const char*)NULL);
 		got_it += mono_config_parse_file_with_context (&state, cfg);
 		g_free (cfg);

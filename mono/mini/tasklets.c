@@ -213,5 +213,6 @@ mono_tasklets_init(void)
 	mono_add_internal_call_internal ("Mono.Tasklets.Continuation::restore", continuation_restore);
 
 }
-#endif
+#endif /* MONO_SUPPORT_TASKLETS */
+
 

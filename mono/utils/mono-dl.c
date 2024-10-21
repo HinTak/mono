@@ -148,25 +148,20 @@ get_dl_name_from_libtool (const char *libtool_file)
 	return line;
 }
 
-#ifdef ENABLE_NETCORE
-static const char *
-fix_libc_name (const char *name)
+
+/**
+ * mono_dl_open_self:
+ * \param error_msg pointer for error message on failure
+ *
+ * Returns a handle to the main program, on android x86 it's not possible to 
+ * call dl_open(null), it returns a null handle, so this function returns RTLD_DEFAULT
+ * handle in this platform.
+ */
+MonoDl*
+mono_dl_open_self (char **error_msg)
 {
-	if (name != NULL && strcmp (name, "libc") == 0) {
-		// Taken from CoreCLR: https://github.com/dotnet/coreclr/blob/6b0dab793260d36e35d66c82678c63046828d01b/src/pal/src/loader/module.cpp#L568-L576
-#if defined (HOST_DARWIN)
-		return "/usr/lib/libc.dylib";
-#elif defined (__FreeBSD__)
-		return "libc.so.7";
-#elif defined (LIBC_SO)
-		return LIBC_SO;
-#else
-		return "libc.so";
-#endif
-	}
-	return name;
+	return mono_dl_open (NULL, MONO_DL_LAZY, error_msg);
 }
-#endif
 
 /**
  * mono_dl_open:
@@ -187,10 +182,16 @@ fix_libc_name (const char *name)
 MonoDl*
 mono_dl_open (const char *name, int flags, char **error_msg)
 {
+	return mono_dl_open_full (name, flags, 0, error_msg);
+}
+
+MonoDl *
+mono_dl_open_full (const char *name, int mono_flags, int native_flags, char **error_msg)
+{
 	MonoDl *module;
 	void *lib;
 	MonoDlFallbackHandler *dl_fallback = NULL;
-	int lflags = mono_dl_convert_flags (flags);
+	int lflags = mono_dl_convert_flags (mono_flags, native_flags);
 	char *found_name;
 
 	if (error_msg)
@@ -204,9 +205,6 @@ mono_dl_open (const char *name, int flags, char **error_msg)
 	}
 	module->main_module = name == NULL? TRUE: FALSE;
 
-#ifdef ENABLE_NETCORE
-	name = fix_libc_name (name);
-#endif
 
 	// No GC safe transition because this is called early in main.c
 	lib = mono_dl_open_file (name, lflags);
@@ -398,17 +396,9 @@ mono_dl_build_path (const char *directory, const char *name, void **iter)
 		need_suffix = FALSE;
 		suffix = "";
 	} else if (idx == 1) {
-#ifdef ENABLE_NETCORE
-		/* netcore system libs have a suffix but no prefix */
-		need_prefix = FALSE;
-		need_suffix = TRUE;
-		suffix = mono_dl_get_so_suffixes () [0];
-		suffixlen = strlen (suffix);
-#else
 		suffix = mono_dl_get_so_suffixes () [idx - 1];
 		if (suffix [0] == '\0')
 			return NULL;
-#endif
 	} else {
 		/* Prefix.Name.suffix */
 		suffix = mono_dl_get_so_suffixes () [idx - 2];

@@ -501,6 +501,9 @@ namespace MonoTests.System.Net.Sockets {
 		}
 
 		[Test] // JoinMulticastGroup (IPAddress)
+#if FULL_AOT_DESKTOP || FULL_AOT_INTERP
+		[Category ("NotWorking")] // fails in FullAOT in Docker. See https://github.com/mono/mono/issues/20888
+#endif
 #if FEATURE_NO_BSD_SOCKETS
 		[ExpectedException (typeof (PlatformNotSupportedException))]
 #endif
@@ -596,6 +599,9 @@ namespace MonoTests.System.Net.Sockets {
 		}
 
 		[Test] // JoinMulticastGroup (In32, IPAddress)
+#if FULL_AOT_DESKTOP || FULL_AOT_INTERP
+		[Category ("NotWorking")] // fails in FullAOT in Docker. See https://github.com/mono/mono/issues/20888
+#endif
 #if FEATURE_NO_BSD_SOCKETS
 		[ExpectedException (typeof (PlatformNotSupportedException))]
 #endif
@@ -656,11 +662,17 @@ namespace MonoTests.System.Net.Sockets {
 		}
 
 		[Test] // JoinMulticastGroup (Int32, IPAddress)
+#if FULL_AOT_DESKTOP || FULL_AOT_INTERP
+		[Category ("NotWorking")] // fails in FullAOT in Docker. See https://github.com/mono/mono/issues/20888
+#endif
 #if FEATURE_NO_BSD_SOCKETS
 		[ExpectedException (typeof (PlatformNotSupportedException))]
 #endif
 		public void JoinMulticastGroup2_Socket_NotBound ()
 		{
+			if (!Socket.OSSupportsIPv6)
+				Assert.Ignore ("IPv6 not enabled.");
+
 			IPAddress mcast_addr = IPAddress.Parse ("ff02::1");
 
 			using (UdpClient client = new UdpClient (AddressFamily.InterNetworkV6)) {
@@ -686,6 +698,9 @@ namespace MonoTests.System.Net.Sockets {
 		}
 
 		[Test] // JoinMulticastGroup (IPAddress, Int32)
+#if FULL_AOT_DESKTOP || FULL_AOT_INTERP
+		[Category ("NotWorking")] // fails in FullAOT in Docker. See https://github.com/mono/mono/issues/20888
+#endif
 #if FEATURE_NO_BSD_SOCKETS
 		[ExpectedException (typeof (PlatformNotSupportedException))]
 #endif
@@ -1141,6 +1156,9 @@ namespace MonoTests.System.Net.Sockets {
 		}
 
 		[Test] // #6057
+#if FULL_AOT_DESKTOP || FULL_AOT_INTERP
+		[Category ("NotWorking")] // fails in FullAOT in Docker. See https://github.com/mono/mono/issues/20888
+#endif
 #if FEATURE_NO_BSD_SOCKETS
 		[ExpectedException (typeof (PlatformNotSupportedException))]
 #endif

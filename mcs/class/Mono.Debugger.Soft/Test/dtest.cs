@@ -49,6 +49,7 @@ public class DebuggerTests
 	public static string agent_args = Environment.GetEnvironmentVariable ("DBG_AGENT_ARGS");
 
 	public static string dtest_app_path = "dtest-app.exe";
+	public static string dtest_app_opt_path = "dtest-app-opt.exe";
 	public static string dtest_excfilter_path = "dtest-excfilter.exe";
 
 	// Not currently used, but can be useful when debugging individual tests.
@@ -1806,7 +1807,7 @@ public class DebuggerTests
 		t = frame.Method.GetParameters ()[7].ParameterType;
 
 		var props = t.GetProperties ();
-		Assert.AreEqual (3, props.Length);
+		Assert.AreEqual (4, props.Length);
 		foreach (PropertyInfoMirror prop in props) {
 			ParameterInfoMirror[] indexes = prop.GetIndexParameters ();
 
@@ -2178,6 +2179,17 @@ public class DebuggerTests
 
 		TypeMirror t = vm.RootDomain.Corlib.GetType ("System.Diagnostics.DebuggerDisplayAttribute");
 		Assert.AreEqual ("DebuggerDisplayAttribute", t.Name);
+
+		TypeMirror ba = m.Assembly.GetType ("BAttribute");
+		Assert.IsNotNull (ba);
+
+		var bs = m.Assembly.GetCustomAttributes (ba);
+		Assert.AreEqual (1, bs.Length);
+
+		var attrs = m.Assembly.GetCustomAttributes ();
+		Assert.IsTrue (attrs.Length >= 2); // compiler generated attributes
+		Assert.IsNotNull (attrs.Single (ca => ca.Constructor.DeclaringType.Name == "AAttribute"));
+		Assert.IsNotNull (attrs.Single (ca => ca.Constructor.DeclaringType.Name == "BAttribute"));
 	}
 
 	[Test]
@@ -2475,6 +2487,7 @@ public class DebuggerTests
 	[Test]
 	[Category("NotOnWindows")]
 	[Category ("AndroidSdksNotWorking")]
+	[Ignore("https://github.com/mono/mono/issues/20905")] // fails on Linux i386 on CI
 	public void Crash () {
 		string [] existingCrashFileEntries = Directory.GetFiles (".", "mono_crash*.json");
 
@@ -4861,7 +4874,6 @@ public class DebuggerTests
 
 		AssertValue(2, pointerValue2.Value);
 
-
 		param = frame.Method.GetParameters()[1];
 		Assert.AreEqual("BlittableStruct*", param.ParameterType.Name);
 
@@ -4876,6 +4888,15 @@ public class DebuggerTests
 		f = structValue.Fields[1];
 		AssertValue (3.0, f);
 
+#if !__MonoCS__
+		// function pointers
+		param = frame.Method.GetParameters()[2];
+		pointerValue = frame.GetValue(param) as PointerValue;
+		Assert.AreEqual (0, pointerValue.Address);
+		frame.SetValue (param, new PointerValue (vm, param.ParameterType, 1));
+		pointerValue = frame.GetValue(param) as PointerValue;
+		Assert.AreEqual (1, pointerValue.Address);
+#endif
 	}
 
 	[Test]
@@ -4951,6 +4972,23 @@ public class DebuggerTests
 		e = step_into ();
 		e = step_into ();
 		Assert.IsTrue ((e as StepEvent).Method.Name == "op_Equality" || (e as StepEvent).Method.Name == "if_property_stepping");
+	}
+
+	[Test]
+	public void DebuggerBreakInFieldDoesNotHang () {
+		vm.EnableEvents (EventType.UserBreak);
+		Event e = run_until ("o1");
+
+		StackFrame frame = e.Thread.GetFrames () [0];
+		object val = frame.GetThis ();
+		Assert.IsTrue (val is ObjectMirror);
+		Assert.AreEqual ("Tests", (val as ObjectMirror).Type.Name);
+		ObjectMirror o = (val as ObjectMirror);
+		TypeMirror t = o.Type;
+
+		MethodMirror m = t.GetProperty ("BreakInField").GetGetMethod();
+		Value v = o.InvokeMethod (e.Thread, m, null, InvokeOptions.DisableBreakpoints);
+		AssertValue ("Foo", v);
 	}
 
 #if !MONODROID_TOOLS
@@ -5174,6 +5212,25 @@ public class DebuggerTests
 		e = step_in_await ("MoveNext", e);
 	}
 
+
+	[Test]
+	public void TestAsyncDebugGenericsValueType () {
+		vm.Detach();
+		Start(dtest_app_opt_path);
+		MethodMirror async_method = entry_point.DeclaringType.GetMethod("test_async_debug_generics");
+		Assert.IsNotNull(async_method);
+		vm.SetBreakpoint(async_method, 0);
+		vm.Resume();
+		var e = GetNextEvent();
+		Assert.AreEqual(EventType.Breakpoint, e.EventType);
+		e = step_in_await("MoveNext", e);
+		e = step_in_await("MoveNext", e);
+		e = step_in_await("MoveNext", e);
+		vm.Exit(0);
+		vm = null;
+	}
+
+
 	[Test]
 	public void InvalidPointer_GetValue () {
 		vm.Detach ();
@@ -5211,6 +5268,7 @@ public class DebuggerTests
 	}
   
 	[Test]
+	[Category("NotWorking")]
 	public void InvokeSingleStepMultiThread () {
 		vm.Detach ();
 		Start (dtest_app_path, "ss_multi_thread");

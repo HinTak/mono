@@ -838,9 +838,11 @@ mono_cpu_count (void)
  * [5] https://github.com/dotnet/coreclr/blob/7058273693db2555f127ce16e6b0c5b40fb04867/src/pal/src/misc/sysinfo.cpp#L148
  */
 
+
 #if defined (_SC_NPROCESSORS_CONF) && defined (HAVE_SYSCONF)
 	{
-		int count = sysconf (_SC_NPROCESSORS_CONF);
+		int count;
+		count = sysconf (_SC_NPROCESSORS_CONF);
 		if (count > 0)
 			return count;
 	}
@@ -879,6 +881,43 @@ mono_cpu_count (void)
 	/* FIXME: warn */
 	return 1;
 }
+
+/**
+ * mono_cpu_limit:
+ * \returns the number of processors available to this process
+ */
+int
+mono_cpu_limit (void)
+{
+	int count = 0;
+	static int limit = -1;	/* Value will be cached for future calls */
+
+	/*
+	 * If 1st time through then check if user has mandated a value and use it,
+	 * otherwise we check for any cgroup limit and use the min of actual number
+	 * and that limit
+	 */ 
+	if (limit == -1) {
+		char *dotnetProcCnt = getenv ("DOTNET_PROCESSOR_COUNT");
+		if (dotnetProcCnt != NULL) {
+			errno = 0;
+			limit = (int) strtol (dotnetProcCnt, NULL, 0);
+			if ((errno == 0) && (limit > 0))	/* If it's in range and positive */
+				return limit;
+		}
+		limit = mono_cpu_count ();
+#if HAVE_CGROUP_SUPPORT
+		if (mono_get_cpu_limit (&count))
+			limit = (limit < count ? limit : count);
+#endif
+	}
+
+	/*
+	 * Just return the cached value
+	 */
+	return limit;
+
+}
 #endif /* !HOST_WIN32 */
 
 static void
@@ -892,7 +931,7 @@ get_cpu_times (int cpu_id, gint64 *user, gint64 *systemt, gint64 *irq, gint64 *s
 	if (!f)
 		return;
 	if (cpu_id < 0)
-		uhz *= mono_cpu_count ();
+		uhz *= mono_cpu_limit ();
 	while ((s = fgets (buf, sizeof (buf), f))) {
 		char *data = NULL;
 		if (cpu_id < 0 && strncmp (s, "cpu", 3) == 0 && g_ascii_isspace (s [3])) {
@@ -982,7 +1021,7 @@ gboolean
 mono_pe_file_time_date_stamp (const gunichar2 *filename, guint32 *out)
 {
 	void *map_handle;
-	gint32 map_size;
+	guint32 map_size;
 	gpointer file_map = mono_pe_file_map (filename, &map_size, &map_handle);
 	if (!file_map)
 		return FALSE;
@@ -1011,14 +1050,14 @@ mono_pe_file_time_date_stamp (const gunichar2 *filename, guint32 *out)
 }
 
 gpointer
-mono_pe_file_map (const gunichar2 *filename, gint32 *map_size, void **handle)
+mono_pe_file_map (const gunichar2 *filename, guint32 *map_size, void **handle)
 {
 	gchar *filename_ext = NULL;
 	gchar *located_filename = NULL;
-	int fd = -1;
-	struct stat statbuf;
+	guint64 fsize = 0;
 	gpointer file_map = NULL;
 	ERROR_DECL (error);
+	MonoFileMap *filed = NULL;
 
 	/* According to the MSDN docs, a search path is applied to
 	 * filename.  FIXME: implement this, for now just pass it
@@ -1041,8 +1080,7 @@ mono_pe_file_map (const gunichar2 *filename, gint32 *map_size, void **handle)
 		goto exit;
 	}
 
-	fd = open (filename_ext, O_RDONLY, 0);
-	if (fd == -1 && (errno == ENOENT || errno == ENOTDIR) && IS_PORTABILITY_SET) {
+	if ((filed = mono_file_map_open (filename_ext)) == NULL && IS_PORTABILITY_SET) {
 		gint saved_errno = errno;
 
 		located_filename = mono_portability_find_file (filename_ext, TRUE);
@@ -1053,38 +1091,39 @@ mono_pe_file_map (const gunichar2 *filename, gint32 *map_size, void **handle)
 			goto exit;
 		}
 
-		fd = open (located_filename, O_RDONLY, 0);
-		if (fd == -1) {
-			mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER_PROCESS, "%s: Error opening file %s (3): %s", __func__, filename_ext, strerror (errno));
+		if ((filed = mono_file_map_open (located_filename)) == NULL) {
+			mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER_PROCESS, "%s: Error opening file %s (3): %s", __func__, located_filename, strerror (errno));
 			goto exit;
 		}
 	}
-	else if (fd == -1) {
+	else if (filed == NULL) {
 		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER_PROCESS, "%s: Error opening file %s (3): %s", __func__, filename_ext, strerror (errno));
 		goto exit;
 	}
 
-	if (fstat (fd, &statbuf) == -1) {
+	fsize = mono_file_map_size (filed);
+	if (fsize == 0) {
 		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER_PROCESS, "%s: Error stat()ing file %s: %s", __func__, filename_ext, strerror (errno));
 		goto exit;
 	}
-	*map_size = statbuf.st_size;
+	g_assert (fsize <= G_MAXUINT32);
+	*map_size = fsize;
 
 	/* Check basic file size */
-	if (statbuf.st_size < sizeof(IMAGE_DOS_HEADER)) {
-		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER_PROCESS, "%s: File %s is too small: %" PRId64, __func__, filename_ext, (gint64) statbuf.st_size);
+	if (fsize < sizeof(IMAGE_DOS_HEADER)) {
+		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER_PROCESS, "%s: File %s is too small: %" PRId64, __func__, filename_ext, fsize);
 
 		goto exit;
 	}
 
-	file_map = mono_file_map (statbuf.st_size, MONO_MMAP_READ | MONO_MMAP_PRIVATE, fd, 0, handle);
+	file_map = mono_file_map (fsize, MONO_MMAP_READ | MONO_MMAP_PRIVATE, mono_file_map_fd (filed), 0, handle);
 	if (file_map == NULL) {
 		mono_trace (G_LOG_LEVEL_DEBUG, MONO_TRACE_IO_LAYER_PROCESS, "%s: Error mmap()int file %s: %s", __func__, filename_ext, strerror (errno));
 		goto exit;
 	}
 exit:
-	if (fd != -1)
-		close (fd);
+	if (filed)
+		mono_file_map_close (filed);
 	g_free (located_filename);
 	g_free (filename_ext);
 	return file_map;
@@ -1134,7 +1173,7 @@ mono_cpu_usage (MonoCpuUsageState *prev)
 	user_time = resource_usage.ru_utime.tv_sec * 1000 * 1000 * 10 + resource_usage.ru_utime.tv_usec * 10;
 
 	cpu_busy_time = (user_time - (prev ? prev->user_time : 0)) + (kernel_time - (prev ? prev->kernel_time : 0));
-	cpu_total_time = (current_time - (prev ? prev->current_time : 0)) * mono_cpu_count ();
+	cpu_total_time = (current_time - (prev ? prev->current_time : 0)) * mono_cpu_limit ();
 
 	if (prev) {
 		prev->kernel_time = kernel_time;

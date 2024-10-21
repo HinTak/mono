@@ -55,7 +55,8 @@ class C
 			Crashers.Add(new Crasher ("MerpCrashExceptionHook", MerpCrashUnhandledExceptionHook));
 
 			// Specific Edge Cases
-			Crashers.Add(new Crasher ("MerpCrashDladdr", MerpCrashDladdr));
+			//FIXME: crash in dlopen holds the global dyld lock, which we need for stack walks.
+			//Crashers.Add(new Crasher ("MerpCrashDladdr", MerpCrashDladdr));
 			Crashers.Add(new Crasher ("MerpCrashSnprintf", MerpCrashSnprintf));
 			Crashers.Add(new Crasher ("MerpCrashDomainUnload", MerpCrashDomainUnload));
 			Crashers.Add(new Crasher ("MerpCrashUnbalancedGCSafe", MerpCrashUnbalancedGCSafe));
@@ -65,6 +66,8 @@ class C
 			Crashers.Add(new Crasher ("MerpCrashSignalKill", MerpCrashSignalBus));
 			Crashers.Add(new Crasher ("MerpCrashSignalSegv", MerpCrashSignalSegv));
 			Crashers.Add(new Crasher ("MerpCrashSignalIll", MerpCrashSignalIll));
+			Crashers.Add(new Crasher ("MerpCrashTestBreadcrumbs", MerpCrashTestBreadcrumbs, validator: ValidateBreadcrumbs));
+			Crashers.Add(new Crasher ("MerpCrashOnForeignThread", MerpCrashOnForeignThread));
 		}
 
 		public static void 
@@ -86,6 +89,22 @@ class C
 			string s = jsonGetKeys (json, "payload", "failfast_message") as string;
 			if (s != failfastMsg)
 				throw new ValidationException (String.Format ("incorrect fail fast message (expected: {0}, got: {1})", failfastMsg, s));
+		}
+
+		public static void ValidateBreadcrumbs (object json)
+		{
+			var monoType = Type.GetType ("Mono.Runtime", false);
+			var m = monoType.GetMethod ("CheckCrashReportReason", BindingFlags.NonPublic | BindingFlags.Static);
+			var m_params = new object [] { "./", false };
+			string o = (string)m.Invoke(null, m_params);
+			if (o != "segv")
+				throw new Exception ("Crash report reason should be 'segv'");
+
+			m = monoType.GetMethod ("CheckCrashReportHash", BindingFlags.NonPublic | BindingFlags.Static);
+			long hash = (long)m.Invoke (null, m_params);
+
+			if (hash == 0)
+				throw new Exception ("Crash hash should not be zero");
 		}
 
 		[DllImport("libtest")]
@@ -222,6 +241,20 @@ class C
 			mono_test_MerpCrashUnhandledExceptionHook ();
 		}
 
+		public static void
+		MerpCrashTestBreadcrumbs ()
+		{
+			mono_test_MerpCrashSignalSegv ();
+		}
+
+		[DllImport("libtest")]
+		public static extern void mono_test_MerpCrashOnForeignThread ();
+
+		public static void
+		MerpCrashOnForeignThread ()
+		{
+			mono_test_MerpCrashOnForeignThread ();
+		}
 
 		private static object jsonGetKey (object o, string key) => (o as Dictionary<string,object>)[key];
 		private static object jsonGetKeys (object o, params string[] keys) {
@@ -273,8 +306,6 @@ class C
 	public static void 
 	TestValidate (string configDir, bool silent, Action<object> validator = null)
 	{
-		DumpLogCheck (expected_level: "MerpInvoke"); // we are expecting merp invoke to fail
-
 		var xmlFilePath = String.Format("{0}CustomLogsMetadata.xml", configDir);
 		var paramsFilePath = String.Format("{0}MERP.uploadparams.txt", configDir);
 		var crashFilePath = String.Format("{0}lastcrashlog.txt", configDir);
@@ -319,7 +350,7 @@ class C
 			} catch (CrasherClass.ValidationException e) {
 				throw new Exception (String.Format ("Validation failed '{0}', json: {1}", e.Message, crashFile));
 			} catch (Exception e) {
-				throw new Exception (String.Format ("Invalid json: {0}", crashFile));
+				throw new Exception (String.Format ("Invalid json  ({0}:{1}): {2}", e.GetType(), e.Message, crashFile));
 			}
 
 			File.Delete (crashFilePath);
@@ -327,6 +358,8 @@ class C
 		} else {
 			Console.WriteLine ("Crash file {0} missing", crashFilePath);
 		}
+
+		DumpLogCheck (expected_level: "MerpInvoke"); // we are expecting merp invoke to fail
 
 		if (!xmlFileExists)
 			throw new Exception (String.Format ("Did not produce {0}", xmlFilePath));
@@ -368,6 +401,15 @@ class C
 
 		if (expected_level != levels [result])
 			throw new Exception (String.Format ("Crash level {0} does not match expected {1}", levels [result], expected_level));
+
+		// also clear hash and reason breadcrumbs
+		convert = monoType.GetMethod("CheckCrashReportHash", BindingFlags.NonPublic | BindingFlags.Static);
+		var hash_result = (long) convert.Invoke(null, new object[] { "./", true });
+		convert = monoType.GetMethod("CheckCrashReportReason", BindingFlags.NonPublic | BindingFlags.Static);
+		var reason_result = (string) convert.Invoke(null, new object[] { "./", true });
+
+		if (reason_result == string.Empty)
+			throw new Exception("Crash reason should not be an empty string");
 	}
 
 

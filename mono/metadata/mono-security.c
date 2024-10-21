@@ -20,10 +20,10 @@
 #include <mono/metadata/metadata-internals.h>
 #include <mono/metadata/security.h>
 #include <mono/utils/strenc.h>
+#include <mono/utils/w32subset.h>
 #include "reflection-internals.h"
 #include "icall-decl.h"
 
-#ifndef ENABLE_NETCORE
 
 #ifndef HOST_WIN32
 #ifdef HAVE_GRP_H
@@ -366,7 +366,7 @@ ves_icall_System_Security_Principal_WindowsImpersonationContext_DuplicateToken (
 }
 #endif /* !HOST_WIN32 */
 
-#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+#if HAVE_API_SUPPORT_WIN32_SECURITY
 MonoBoolean
 ves_icall_System_Security_Principal_WindowsImpersonationContext_SetCurrentToken (gpointer token, MonoError *error)
 {
@@ -406,7 +406,25 @@ ves_icall_System_Security_Principal_WindowsImpersonationContext_RevertToSelf (Mo
 	return geteuid () == suid;
 #endif
 }
-#endif /* G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT) */
+#elif !HAVE_EXTERN_DEFINED_WIN32_SECURITY
+MonoBoolean
+ves_icall_System_Security_Principal_WindowsImpersonationContext_SetCurrentToken (gpointer token, MonoError *error)
+{
+	g_unsupported_api ("ImpersonateLoggedOnUser");
+	mono_error_set_not_supported (error, G_UNSUPPORTED_API, "ImpersonateLoggedOnUser");
+	SetLastError (ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+
+MonoBoolean
+ves_icall_System_Security_Principal_WindowsImpersonationContext_RevertToSelf (MonoError *error)
+{
+	g_unsupported_api ("RevertToSelf");
+	mono_error_set_not_supported (error, G_UNSUPPORTED_API, "RevertToSelf");
+	SetLastError (ERROR_NOT_SUPPORTED);
+	return FALSE;
+}
+#endif /* HAVE_API_SUPPORT_WIN32_SECURITY */
 
 /* System.Security.Principal.WindowsPrincipal */
 
@@ -649,8 +667,3 @@ ves_icall_System_Security_SecureString_EncryptInternal (MonoArrayHandle data, Mo
 	mono_invoke_protected_memory_method (data, scope, "Protect", &mono_method_securestring_encrypt, error);
 }
 
-#else
-
-MONO_EMPTY_SOURCE_FILE (mono_security);
-
-#endif /* ENABLE_NETCORE */

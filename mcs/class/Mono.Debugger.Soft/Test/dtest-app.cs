@@ -19,6 +19,9 @@ using System.Collections;
 using MonoTests.Helpers;
 #endif
 
+[assembly: A]
+[assembly: B]
+
 public class TestsBase
 {
 #pragma warning disable 0414
@@ -470,6 +473,14 @@ public class Tests : TestsBase, ITest2
 	static string arg;
 
 #pragma warning restore 0414
+
+	public string BreakInField
+	{
+		get {
+			Debugger.Break ();
+			return "Foo";
+		}
+	}
 
 	public class NestedClass {
 	}
@@ -2233,7 +2244,11 @@ public class Tests : TestsBase, ITest2
 	{
 	}
 
-	public static unsafe void pointer_arguments (int* a, BlittableStruct* s) {
+#if __MonoCS__
+	public static unsafe void pointer_arguments (int* a, BlittableStruct* s, int *del) {
+#else
+	public static unsafe void pointer_arguments (int* a, BlittableStruct* s, delegate*<int> del) {
+#endif
 		*a = 0;
 	}
 
@@ -2242,7 +2257,7 @@ public class Tests : TestsBase, ITest2
 		int[] a = new [] {1,2,3};
 		BlittableStruct s = new BlittableStruct () { i = 2, d = 3.0 };
 		fixed (int* pa = a)
-			pointer_arguments (pa, &s);
+			pointer_arguments (pa, &s, null);
 	}
 
 	[MethodImplAttribute (MethodImplOptions.NoInlining)]
